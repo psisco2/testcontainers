@@ -10,7 +10,7 @@ import org.springframework.kafka.core.KafkaAdmin;
 import java.util.HashMap;
 import java.util.Map;
 
-@Configuration
+// @Configuration
 public class KafkaTopicConfiguration {
 
     @Value(value = "${app.kafka.bootstrapAddress}")
