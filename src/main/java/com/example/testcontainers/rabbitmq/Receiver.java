@@ -10,21 +10,13 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.util.concurrent.CountDownLatch;
 
-// @Component
+//@Component
 public class Receiver {
 
-    /*private CountDownLatch latch = new CountDownLatch(1);
-
     @RabbitListener(queues = RabbitMQConfig.queueName)
-    public void receive(String payload, Channel channel, @Header(AmqpHeaders.DELIVERY_TAG) long tag) throws IOException {
+    public void receiveMessage(String payload) throws IOException {
         System.out.println(payload);
-        channel.basicAck(tag, false);
-
-        latch.countDown();
+        //channel.basicAck(tag, false);
     }
-
-    public CountDownLatch getLatch() {
-        return latch;
-    }*/
 
 }

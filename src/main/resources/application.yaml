@@ -4,6 +4,25 @@ app:
     groupId: Test
 
 spring:
+  rabbitmq:
+    host: localhost
+    port: 5672
+    stream:
+      username: guest
+      password: guest
+    listener:
+      acknowledge-mode: manual
+      simple:
+        concurrency: 5
+        default-request-rejected: true
+        max-concurrency: 5
+        retry:
+          initial-interval: 3000
+          max-attempts: 5
+          multiplier: 2
+          enable: true
+          max-interval: 600000
+
   kafka:
     consumer:
       group-id: group_id

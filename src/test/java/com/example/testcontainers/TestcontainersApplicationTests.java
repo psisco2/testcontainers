@@ -6,13 +6,16 @@ import static org.hamcrest.CoreMatchers.is;
 
 import com.example.testcontainers.rabbitmq.RabbitMQConfig;
 import com.example.testcontainers.rabbitmq.Receiver;
-import com.rabbitmq.client.Channel;
+import com.rabbitmq.client.*;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
-import org.assertj.core.api.Assertions;
 import org.awaitility.Awaitility;
+import org.junit.Assert;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.rnorth.ducttape.unreliables.Unreliables;
+import org.springframework.amqp.core.AcknowledgeMode;
 import org.springframework.amqp.core.ExchangeTypes;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -40,14 +43,15 @@ import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Predicate;
 
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 class TestcontainersApplicationTests {
 
-    static final String topicExchangeName = "spring-boot-exchange";
-    static final String queueName = "spring-boot";
+    //static final String topicExchangeName = "spring-boot-exchange";
+    //static final String queueName = "spring-boot";
 
     CountDownLatch latch = new CountDownLatch(1);
     List<String> messages = new ArrayList<>();
@@ -56,18 +60,18 @@ class TestcontainersApplicationTests {
     static KafkaContainer kafkaContainer = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka"));
 
     @Container
-    private static RabbitMQContainer rabbitMQContainer = new RabbitMQContainer(DockerImageName.parse("rabbitmq").withTag("3-management-alpine"))
-            .withQueue(queueName)
-            .withExchange(topicExchangeName, ExchangeTypes.TOPIC)
-            .withBinding(topicExchangeName, queueName, Collections.emptyMap(), "foo.bar.#", "queue")
-            .withEnv("spring.rabbitmq.listener.acknowledge-mode", "manual");
+    private static RabbitMQContainer rabbitMQContainer = new RabbitMQContainer(DockerImageName.parse("rabbitmq").withTag("3-management-alpine"));/*.withQueue(RabbitMQConfig.queueName, false, true, Collections.emptyMap())
+            .withQueue(RabbitMQConfig.deadLetterQueueName, false, true, Collections.emptyMap())
+            .withExchange(RabbitMQConfig.exchangeName, ExchangeTypes.DIRECT)
+            .withExchange(RabbitMQConfig.deadLetterExchangeName, ExchangeTypes.FANOUT)
+            .withBinding(RabbitMQConfig.exchangeName, RabbitMQConfig.queueName, Collections.emptyMap(), "message_routing_key", "queue");*/
 
     @Autowired
     KafkaTemplate<String, String> kafkaTemplate;
 
     @Autowired
     RabbitTemplate rabbitTemplate;
-    
+
     @BeforeAll
     static void setUp() {
 //        kafkaContainer = new KafkaContainer(
@@ -88,21 +92,64 @@ class TestcontainersApplicationTests {
         registry.add("spring.kafka.bootstrap-servers", kafkaContainer::getBootstrapServers);
     }
 
-    @Test
+    //@Test
     void contextLoads() {
     }
 
     @Test
-    void rabbitmqTest() throws InterruptedException {
-        //rabbitTemplate.convertAndSend("exchangeIn", "routing.myqueue", "myMessage".getBytes());
-        rabbitTemplate.sendAndReceive(topicExchangeName, "foo.bar.baz", new Message("myMessage".getBytes()));
+    void rabbitmqAckTest() throws InterruptedException {
+        rabbitTemplate.convertAndSend(RabbitMQConfig.exchangeName, "spring-boot-key", "Hello!");
 
-        assertThat(latch.await(10, TimeUnit.SECONDS));
+        latch.await(5, TimeUnit.SECONDS);
+
+        Map<String, Object> args = new HashMap<>();
+        args.put("x-dead-letter-exchange", RabbitMQConfig.deadLetterExchangeName);
+        args.put("x-dead-letter-routing-key", "deadLetter");
+
+        var queueMessageCount = rabbitTemplate.execute(channel -> {
+            return channel.queueDeclare(RabbitMQConfig.queueName, true, false, false, args).getMessageCount();
+        });
+
+        var deadLetterQueueMessageCount = rabbitTemplate.execute(channel -> {
+            return channel.queueDeclare(RabbitMQConfig.deadLetterQueueName, true, false, false, null).getMessageCount();
+        });
+
+        var queuedMessage = rabbitTemplate.receiveAndConvert(RabbitMQConfig.queueName);
+        var deadLetterQueuedMessage = rabbitTemplate.receiveAndConvert(RabbitMQConfig.deadLetterQueueName);
+
+        System.out.println(queueMessageCount);
+        System.out.println(deadLetterQueueMessageCount);
+        System.out.println(queuedMessage);
+        System.out.println(deadLetterQueuedMessage);
+
+        Assertions.assertEquals(0, deadLetterQueueMessageCount);
+        //Assertions.assertTrue(isRabbitMQMessageReceived());
+        //Assertions.assertTrue(queueMessageCount == 1 && queuedMessage == "Hello!");
+
+        //assertThat(latch.await(10, TimeUnit.SECONDS));
 
         //await().atMost(5, TimeUnit.SECONDS).until(isRabbitMQMessageReceived(), is("OK"));
     }
 
     @Test
+    void rabbitmqNackTest() throws InterruptedException {
+        rabbitTemplate.convertAndSend(RabbitMQConfig.exchangeName, "spring-boot-key", "Error");
+
+        latch.await(5, TimeUnit.SECONDS);
+
+        var deadLetterQueueMessageCount = rabbitTemplate.execute(channel -> {
+            return channel.queueDeclare(RabbitMQConfig.deadLetterQueueName, true, false, false, null).getMessageCount();
+        });
+
+        var deadLetterQueuedMessage = rabbitTemplate.receiveAndConvert(RabbitMQConfig.deadLetterQueueName);
+
+        System.out.println(deadLetterQueueMessageCount);
+        System.out.println(deadLetterQueuedMessage);
+
+        Assertions.assertEquals(1, deadLetterQueueMessageCount);
+    }
+
+    //@Test
     void kafkaTest() {
         kafkaTemplate.send("tests", "Hello, World!");
         kafkaTemplate.send("tests", "First Message");
@@ -113,10 +160,15 @@ class TestcontainersApplicationTests {
         await().atMost(5, TimeUnit.SECONDS).until(() -> messages.size(), is(4));
     }
 
-    @RabbitListener(queues = queueName)
-    void receive(String payload, Channel channel, @Header(AmqpHeaders.DELIVERY_TAG) long tag) throws IOException {
+    @RabbitListener(queues = RabbitMQConfig.queueName, ackMode = "MANUAL")
+    void receive(String payload, @Header(AmqpHeaders.CHANNEL) Channel channel, @Header(AmqpHeaders.DELIVERY_TAG) long tag) throws IOException {
         System.out.println("Received message : " + payload);
-        channel.basicAck(tag, false);
+
+        if (payload.equals("Hello!")) {
+            channel.basicAck(tag, false);
+        } else {
+            channel.basicNack(tag, false, false);
+        }
 
         latch.countDown();
     }
@@ -130,9 +182,5 @@ class TestcontainersApplicationTests {
 
     private Callable<Boolean> isMessageConsumed() {
         return () -> kafkaTemplate.receive("tests", 1, 1).value().contains("Hello, World!");
-    }
-
-    private Callable<Object> isRabbitMQMessageReceived() {
-        return () -> rabbitTemplate.receiveAndConvert(queueName);
     }
 }
